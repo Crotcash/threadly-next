@@ -51,17 +51,21 @@ function PostCard({ post }: { post: CommunityPost }) {
   const [commentsOpen, setCommentsOpen] = useState(false);
   const [sending, setSending] = useState(false);
 
+  // Post deletion
+  const [deletingPost, setDeletingPost] = useState(false);
+
   // General error
   const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
 
   const creatorName = post.creatorName || "Threadly Creator";
+
+  const isPostOwner = !!user && user.uid === post.creatorId;
 
   const canMessageCreator =
     !!user && user.uid !== post.creatorId && !!post.creatorId;
 
-  // --------------------------------------------------
-  // 1. LISTEN FOR FIREBASE AUTHENTICATION CHANGES
-  // --------------------------------------------------
+  // 1. AUTHENTICATION
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(
@@ -78,9 +82,7 @@ function PostCard({ post }: { post: CommunityPost }) {
     return () => unsubscribe();
   }, []);
 
-  // --------------------------------------------------
   // 2. LOAD REACTIONS AND COMMENTS
-  // --------------------------------------------------
 
   useEffect(() => {
     const reactionsRef = collection(
@@ -97,9 +99,7 @@ function PostCard({ post }: { post: CommunityPost }) {
 
         setLiked(
           user
-            ? snapshot.docs.some(
-                (item) => item.id === user.uid
-              )
+            ? snapshot.docs.some((item) => item.id === user.uid)
             : false
         );
       },
@@ -134,9 +134,7 @@ function PostCard({ post }: { post: CommunityPost }) {
     };
   }, [post.id, user]);
 
-  // --------------------------------------------------
   // 3. LIKE / UNLIKE POST
-  // --------------------------------------------------
 
   async function toggleReaction() {
     if (!user) {
@@ -145,6 +143,7 @@ function PostCard({ post }: { post: CommunityPost }) {
     }
 
     setError("");
+    setSuccess("");
 
     const reactionRef = doc(
       db,
@@ -169,9 +168,7 @@ function PostCard({ post }: { post: CommunityPost }) {
     }
   }
 
-  // --------------------------------------------------
   // 4. SUBMIT COMMENT
-  // --------------------------------------------------
 
   async function submitComment(
     event: FormEvent<HTMLFormElement>
@@ -194,6 +191,7 @@ function PostCard({ post }: { post: CommunityPost }) {
 
     setSending(true);
     setError("");
+    setSuccess("");
 
     try {
       await addDoc(
@@ -219,9 +217,7 @@ function PostCard({ post }: { post: CommunityPost }) {
     }
   }
 
-  // --------------------------------------------------
   // 5. DELETE COMMENT
-  // --------------------------------------------------
 
   async function deleteComment(commentId: string) {
     if (!user) return;
@@ -236,9 +232,39 @@ function PostCard({ post }: { post: CommunityPost }) {
     }
   }
 
-  // --------------------------------------------------
-  // 6. POST DISPLAY
-  // --------------------------------------------------
+  // 6. DELETE OWN COMMUNITY POST
+
+  async function deletePost() {
+    if (!user || !isPostOwner || deletingPost) {
+      return;
+    }
+
+    const confirmed = window.confirm(
+      "Are you sure you want to delete this post? This action cannot be undone."
+    );
+
+    if (!confirmed) return;
+
+    setDeletingPost(true);
+    setError("");
+    setSuccess("");
+
+    try {
+      await deleteDoc(doc(db, "posts", post.id));
+
+      setSuccess("Your post has been deleted successfully.");
+    } catch (err) {
+      console.error("Post deletion failed:", err);
+
+      setError(
+        "Unable to delete your post. Please check your permissions and try again."
+      );
+    } finally {
+      setDeletingPost(false);
+    }
+  }
+
+  // 7. POST DISPLAY
 
   return (
     <article className="overflow-hidden rounded-2xl border border-blue-900/40 bg-[#0B1224] text-white shadow-lg">
@@ -322,12 +348,44 @@ function PostCard({ post }: { post: CommunityPost }) {
               href={`/messages?to=${encodeURIComponent(
                 post.creatorId
               )}&name=${encodeURIComponent(creatorName)}`}
-              className="ml-auto rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-500"
+              className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-500"
             >
               ✉ Message Creator
             </Link>
           )}
+
+          {/* Delete own post */}
+          {isPostOwner && (
+            <button
+              type="button"
+              onClick={deletePost}
+              disabled={deletingPost}
+              className="ml-auto inline-flex items-center gap-2 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-2 text-sm font-semibold text-red-400 transition hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {deletingPost ? (
+                <>
+                  <span className="animate-spin">⏳</span>
+                  Deleting...
+                </>
+              ) : (
+                <>
+                  <span>🗑</span>
+                  Delete Post
+                </>
+              )}
+            </button>
+          )}
         </div>
+
+        {/* Success message */}
+        {success && (
+          <p
+            role="status"
+            className="mt-3 text-sm text-green-400"
+          >
+            {success}
+          </p>
+        )}
 
         {/* Error message */}
         {error && (
