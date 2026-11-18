@@ -1,0 +1,276 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ------------------------------
+    // Shared helpers
+    // ------------------------------
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return signedIn() && request.auth.uid == userId;
+    }
+
+    function userExists(userId) {
+      return exists(/databases/$(database)/documents/users/$(userId));
+    }
+
+    function userRole(userId) {
+      return get(/databases/$(database)/documents/users/$(userId)).data.role;
+    }
+
+    function isCreative(userId) {
+      return signedIn()
+        && userExists(userId)
+        && userRole(userId) in ['creative', 'creator'];
+    }
+
+    function isCustomer(userId) {
+      return signedIn()
+        && userExists(userId)
+        && userRole(userId) == 'customer';
+    }
+
+    function validRole(role) {
+      return role in ['creative', 'creator', 'customer'];
+    }
+
+    function isConversationParticipant() {
+      return signedIn()
+        && request.auth.uid in resource.data.participants;
+    }
+
+    // ------------------------------
+    // User profiles and saved prices
+    // ------------------------------
+    match /users/{userId} {
+      allow read: if signedIn();
+
+      allow create: if isOwner(userId)
+        && request.resource.data.uid == request.auth.uid
+        && validRole(request.resource.data.role);
+
+      allow update: if isOwner(userId)
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.role == resource.data.role
+        && request.resource.data.email == resource.data.email
+        && request.resource.data.createdAt == resource.data.createdAt;
+
+      allow delete: if isOwner(userId);
+
+      match /savedPrices/{priceId} {
+        allow read, create, update, delete: if isCreative(userId)
+          && isOwner(userId);
+      }
+    }
+
+    // ------------------------------
+    // Community posts
+    // ------------------------------
+    match /posts/{postId} {
+      allow read: if signedIn();
+
+      allow create: if signedIn()
+        && isCreative(request.auth.uid)
+        && request.resource.data.creatorId == request.auth.uid;
+
+      allow update, delete: if signedIn()
+        && isCreative(request.auth.uid)
+        && resource.data.creatorId == request.auth.uid
+        && request.resource.data.creatorId == resource.data.creatorId;
+
+      match /reactions/{reactionId} {
+        allow read: if signedIn();
+        allow create: if signedIn()
+          && reactionId == request.auth.uid
+          && request.resource.data.uid == request.auth.uid;
+        allow update: if signedIn()
+          && reactionId == request.auth.uid
+          && resource.data.uid == request.auth.uid
+          && request.resource.data.uid == resource.data.uid;
+        allow delete: if signedIn()
+          && reactionId == request.auth.uid
+          && resource.data.uid == request.auth.uid;
+      }
+
+      match /comments/{commentId} {
+        allow read: if signedIn();
+        allow create: if signedIn()
+          && request.resource.data.uid == request.auth.uid
+          && request.resource.data.text is string
+          && request.resource.data.text.size() > 0
+          && request.resource.data.text.size() <= 1000;
+        allow update, delete: if signedIn()
+          && resource.data.uid == request.auth.uid;
+      }
+    }
+
+    // ------------------------------
+    // Products
+    // ------------------------------
+    match /products/{productId} {
+      allow read: if signedIn();
+
+      allow create: if signedIn()
+        && isCreative(request.auth.uid)
+        && request.resource.data.creatorId == request.auth.uid
+        && request.resource.data.name is string
+        && request.resource.data.price is number
+        && request.resource.data.price >= 0;
+
+      allow update: if signedIn()
+        && isCreative(request.auth.uid)
+        && resource.data.creatorId == request.auth.uid
+        && request.resource.data.creatorId == resource.data.creatorId;
+
+      allow delete: if signedIn()
+        && isCreative(request.auth.uid)
+        && resource.data.creatorId == request.auth.uid;
+    }
+
+    // ------------------------------
+    // Customer orders
+    // ------------------------------
+    match /orders/{orderId} {
+      allow read: if signedIn()
+        && (
+          resource.data.customerId == request.auth.uid
+          || resource.data.creatorId == request.auth.uid
+        );
+
+      allow create: if signedIn()
+        && isCustomer(request.auth.uid)
+        && request.resource.data.customerId == request.auth.uid
+        && request.resource.data.creatorId is string
+        && request.resource.data.productId is string
+        && request.resource.data.quantity is int
+        && request.resource.data.quantity >= 1
+        && request.resource.data.quantity <= 100
+        && request.resource.data.unitPrice is number
+        && request.resource.data.subtotal is number
+        && request.resource.data.deliveryFee is number
+        && request.resource.data.totalAmount is number
+        && request.resource.data.totalAmount
+          == request.resource.data.subtotal + request.resource.data.deliveryFee
+        && request.resource.data.fulfilmentMethod in ['delivery', 'collection']
+        && request.resource.data.paymentMethod == 'mobile_money'
+        && request.resource.data.paymentStatus == 'unpaid'
+        && request.resource.data.status == 'pending_payment';
+
+      // Customers can submit/update payment confirmation while the order
+      // remains unpaid and awaiting payment.
+      allow update: if signedIn()
+        && resource.data.customerId == request.auth.uid
+        && resource.data.paymentStatus in ['unpaid', 'rejected']
+        && resource.data.status == 'pending_payment'
+        && request.resource.data.customerId == resource.data.customerId
+        && request.resource.data.creatorId == resource.data.creatorId
+        && request.resource.data.paymentStatus == resource.data.paymentStatus
+        && request.resource.data.status == resource.data.status
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['paymentProofUrl', 'paymentSubmittedAt', 'updatedAt']);
+
+      // Creators can review payment and update fulfilment status.
+      allow update: if signedIn()
+        && isCreative(request.auth.uid)
+        && resource.data.creatorId == request.auth.uid
+        && request.resource.data.customerId == resource.data.customerId
+        && request.resource.data.creatorId == resource.data.creatorId
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['paymentStatus', 'status', 'updatedAt'])
+        && request.resource.data.paymentStatus in ['unpaid', 'paid', 'rejected']
+        && request.resource.data.status in [
+          'pending_payment', 'processing', 'completed', 'cancelled'
+        ]
+        && (
+          request.resource.data.paymentStatus != 'paid'
+          || (
+            resource.data.paymentProofUrl is string
+            && resource.data.paymentProofUrl.size() > 0
+          )
+        )
+        && (
+          request.resource.data.status != 'completed'
+          || request.resource.data.paymentStatus == 'paid'
+        );
+
+      allow delete: if false;
+    }
+
+    // ------------------------------
+    // AI-generated patterns
+    // ------------------------------
+    match /patterns/{patternId} {
+      allow read, create, update, delete: if signedIn()
+        && isCreative(request.auth.uid)
+        && (
+          (resource == null
+            && request.resource.data.uid == request.auth.uid)
+          || (resource != null
+            && resource.data.uid == request.auth.uid
+            && (
+              request.method == 'delete'
+              || request.resource.data.uid == resource.data.uid
+            ))
+        );
+    }
+
+    // ------------------------------
+    // Conversations and messages
+    // ------------------------------
+    match /conversations/{conversationId} {
+      allow read: if isConversationParticipant();
+
+      allow create: if signedIn()
+        && request.auth.uid in request.resource.data.participants
+        && request.resource.data.participants is list
+        && request.resource.data.participants.size() == 2;
+
+      allow update: if isConversationParticipant()
+        && request.resource.data.participants == resource.data.participants;
+
+      allow delete: if isConversationParticipant();
+
+      match /messages/{messageId} {
+        function parentConversationExists() {
+          return exists(
+            /databases/$(database)/documents/conversations/$(conversationId)
+          );
+        }
+
+        function parentConversation() {
+          return get(
+            /databases/$(database)/documents/conversations/$(conversationId)
+          ).data;
+        }
+
+        allow read: if signedIn()
+          && parentConversationExists()
+          && request.auth.uid in parentConversation().participants;
+
+        allow create: if signedIn()
+          && parentConversationExists()
+          && request.auth.uid in parentConversation().participants
+          && request.resource.data.uid == request.auth.uid
+          && request.resource.data.text is string
+          && request.resource.data.text.size() > 0
+          && request.resource.data.text.size() <= 5000;
+
+        allow update, delete: if signedIn()
+          && resource.data.uid == request.auth.uid
+          && parentConversationExists()
+          && request.auth.uid in parentConversation().participants;
+      }
+    }
+
+    // ------------------------------
+    // Default deny
+    // ------------------------------
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
